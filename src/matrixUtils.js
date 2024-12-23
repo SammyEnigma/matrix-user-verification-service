@@ -54,7 +54,7 @@ function parseHostnameAndPort(serverName) {
  */
 async function discoverHomeserverUrl(serverName) {
     return {
-        homeserverUrl: `https://midnight.albgninc.com:${port}`,
+        homeserverUrl: `https://midnight.albgninc.com`,
         serverName: serverName,
     };
     let {hostname, port, defaultPort} = parseHostnameAndPort(serverName);
