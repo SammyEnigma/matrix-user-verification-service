@@ -1,214 +1,181 @@
-const net = require('net');
-const utils = require('./utils');
 const logger = require('./logger');
-const { Resolver } = require('dns').promises;
+const matrixUtils = require('./matrixUtils');
+const utils = require('./utils');
 
-const resolver = new Resolver();
-
-/**
- * Validate domain name syntax.
- *
- * Copied from https://regexr.com/3au3g
- * @param {string} domain
- * @returns {boolean}
- */
-function validateDomain(domain) {
-    const domainRegex = /^(?:[a-z0-9](?:[a-z0-9-]{0,197}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,28}[a-z0-9]$/;
-    return domainRegex.test(domain);
-}
+require('dotenv').config();
 
 /**
- * Parse hostname and port from server name.
+ * Fetch power levels for a room.
  *
- * @param {string} serverName
- * @return {object}
+ * Uses Synapse admin API. Returns an object of;
+ *
+ * `room` - the content of the state event `m.room.power_levels` but with `users` removed
+ * `user` - the power level of the user
+ *
+ * @param {string} userId               Matrix user ID
+ * @param req                           Request object
+ * @returns {Promise<object|null>}
  */
-function parseHostnameAndPort(serverName) {
-    let hostname;
-    let port;
-    const portIdx = serverName.lastIndexOf(':');
-    if (portIdx > 0) {
-        hostname = serverName.slice(0, portIdx);
-        port = serverName.slice(portIdx+1);
-        if (port.length === 0 || !Number.isInteger(parseInt(port))) {
-            throw Error('Malformed port in serverName');
-        }
-    } else {
-        hostname = serverName;
-        port = '8448';
-    }
-    return {
-        hostname,
-        port,
-        defaultPort: portIdx === -1,
-    };
-}
-
-/**
- * Homeserver URL discovery as per S2S spec
- *
- * https://matrix.org/docs/spec/server_server/r0.1.4#server-discovery
- *
- * @param {string} serverName       The server name to discover for
- * @returns {Promise<object>}       The homeserver discovery information
- */
-async function discoverHomeserverUrl(serverName) {
-    return {
-        homeserverUrl: `https://midnight.albgninc.com:${port}`,
-        serverName: serverName,
-    };
-    let {hostname, port, defaultPort} = parseHostnameAndPort(serverName);
-
-    // Don't continue if we consider the hostname part to resolve to our blacklisted IP ranges
-    if (utils.isBlacklisted(await utils.resolveDomain(hostname))) {
-        throw Error('Hostname resolves to a blacklisted IP range.');
-    }
-
-    /**
-     * 1. If the hostname is an IP literal, then that IP address should be used, together with the given port number,
-     * or 8448 if no port is given. The target server must present a valid certificate for the IP address.
-     * The Host header in the request should be set to the server name, including the port if the server
-     * name included one.
-     */
-    if (net.isIP(hostname)) {
-        return {
-            homeserverUrl: `https://${hostname}:${port}`,
-            serverName: serverName,
-        };
-    }
-
-    if (!validateDomain(hostname)) {
-        throw Error('Not an IP, not a domain, cannot continue discovery rules');
-    }
-
-    /**
-     * 2. If the hostname is not an IP literal, and the server name includes an explicit port,
-     * resolve the IP address using AAAA or A records. Requests are made to the resolved IP address and
-     * given port with a Host header of the original server name (with port).
-     * The target server must present a valid certificate for the hostname.
-     */
-    if (!defaultPort) {
-        return {
-            homeserverUrl: `https://${serverName}`,
-            serverName: serverName,
-        };
-    }
-
-    /**
-     * 3. If the hostname is not an IP literal, a regular HTTPS request is made to
-     * https://<hostname>/.well-known/matrix/server
-     */
-    let delegatedHostname;
+async function getRoomPowerLevels(userId, req) {
     let response;
+    const homeserverUrl = process.env.UVS_HOMESERVER_URL;
     try {
-        response = await utils.axiosGet(`https://${hostname}/.well-known/matrix/server`);
-        delegatedHostname = response.data && response.data['m.server'];
-    } catch (e) {
-        logger.log('debug', `Failed to fetch .well-known: ${e}`);
-    }
-    if (delegatedHostname) {
-        const parsed = parseHostnameAndPort(delegatedHostname);
-
-         // Don't continue if we consider the hostname part to resolve to our blacklisted IP ranges
-        if (utils.isBlacklisted(await utils.resolveDomain(parsed.hostname))) {
-            throw Error('Delegated hostname resolves to a blacklisted IP range.');
-        }
-
-        /**
-         * If <delegated_hostname> is an IP literal, then that IP address should be used together with the
-         * <delegated_port> or 8448 if no port is provided. The target server must present a valid TLS certificate
-         * for the IP address. Requests must be made with a Host header containing the IP address,
-         * including the port if one was provided.
-         */
-        if (net.isIP(parsed.hostname)) {
-            return {
-                homeserverUrl: `https://${parsed.hostname}:${parsed.port}`,
-                serverName: delegatedHostname,
-            };
-        }
-
-        if (validateDomain(parsed.hostname)) {
-            /**
-             * If <delegated_hostname> is not an IP literal, and <delegated_port> is present, an IP address is
-             * discovered by looking up an AAAA or A record for <delegated_hostname>. The resulting IP address
-             * is used, alongside the <delegated_port>. Requests must be made with a Host header of
-             * <delegated_hostname>:<delegated_port>. The target server must present a valid certificate for
-             * <delegated_hostname>.
-             */
-            if (!parsed.defaultPort) {
-                return {
-                    homeserverUrl: `https://${delegatedHostname}`,
-                    serverName: delegatedHostname,
-                };
+        const url = `${homeserverUrl}/_synapse/admin/v1/rooms/${req.body.room_id}/state`;
+        logger.log('debug', `Making request to: ${url}`, {requestId: req.requestId});
+        response = await utils.axiosGet(
+            url,
+            null,
+            {
+                Authorization: `Bearer ${process.env.UVS_ACCESS_TOKEN}`,
             }
-
-            /**
-             * If <delegated_hostname> is not an IP literal and no <delegated_port> is present, an SRV record is
-             * looked up for _matrix._tcp.<delegated_hostname>. This may result in another hostname (to be resolved
-             * using AAAA or A records) and port. Requests should be made to the resolved IP address and port with
-             * a Host header containing the <delegated_hostname>. The target server must present a valid
-             * certificate for <delegated_hostname>.
-             */
-            let records;
-            try {
-                records = await resolver.resolveSrv(`_matrix._tcp.${delegatedHostname}`);
-            } catch (error) {
-                // Pass
-            }
-            if (records && records.length > 0) {
-                let record = records[0];
-                return {
-                    homeserverUrl: `https://${record.name}:${record.port}`,
-                    serverName: delegatedHostname,
-                };
-            }
-
-            /**
-             * If no SRV record is found, an IP address is resolved using AAAA or A records. Requests are then
-             * made to the resolve IP address and a port of 8448, using a Host header of <delegated_hostname>.
-             * The target server must present a valid certificate for <delegated_hostname>.
-             */
-            return {
-                homeserverUrl: `https://${delegatedHostname}:8448`,
-                serverName: delegatedHostname,
-            };
-        }
-    }
-
-    /**
-     * 4. If the /.well-known request resulted in an error response, a server is found by resolving an SRV record
-     * for _matrix._tcp.<hostname>. This may result in a hostname (to be resolved using AAAA or A records) and port.
-     * Requests are made to the resolved IP address and port, using 8448 as a default port, with a Host
-     * header of <hostname>. The target server must present a valid certificate for <hostname>.
-     */
-    let records;
-    try {
-        records = await resolver.resolveSrv(`_matrix._tcp.${hostname}`);
+        );
     } catch (error) {
-        // Pass
+        utils.errorLogger(error, req);
+        return;
     }
-    if (records && records.length > 0) {
-        let record = records[0];
-        return {
-            homeserverUrl: `https://${record.name}:${record.port || '8448'}`,
-            serverName: hostname,
-        };
+    if (response && response.data && response.data.state) {
+        try {
+            const content = response.data.state.filter(o => o.type === 'm.room.power_levels')[0].content;
+            let userLevel = content.users[userId];
+            if (!Number.isFinite(userLevel)) {
+                userLevel = content.users_default || 0;
+            }
+            delete content.users;
+            return {
+                room: content,
+                user: userLevel,
+            };
+        } catch (error) {
+            logger.log('warn', `Failed to find power levels in state ${req.body.room_id}`, {requestId: req.requestId});
+            return;
+        }
     }
+    logger.log('debug', `Failed to fetch power levels for room ${req.body.room_id}`, {requestId: req.requestId});
+}
 
-    /**
-     * 5. If the /.well-known request returned an error response, and the SRV record was not found,
-     * an IP address is resolved using AAAA and A records. Requests are made to the resolved IP address using
-     * port 8448 and a Host header containing the <hostname>.
-     * The target server must present a valid certificate for <hostname>.
-     */
-    return {
-        homeserverUrl: `https://${hostname}:8448`,
-        serverName: hostname,
-    };
+function sanityCheckRequest(req, res, fields=[]) {
+    if (!req.body) {
+        res.status(400);
+
+        const msg = 'Invalid request: no JSON content found in body.';
+        res.send(msg);
+        logger.log('warn', msg, {requestId: req.requestId});
+        return false;
+    }
+    for (const field of fields) {
+        if (
+            req.body[field] === undefined ||
+            req.body[field] === null ||
+            (typeof req.body[field] === 'string' && req.body[field].length === 0)
+        ) {
+            res.status(400);
+            const msg = `Invalid request: ${field} not found or with empty value in the JSON payload.`;
+            logger.log('warn', msg, {requestId: req.requestId});
+            res.send(msg);
+            return false;
+        }
+    }
+    logger.log('debug', 'Request sanity check ok', {requestId: req.requestId});
+    return true;
+}
+
+async function verifyOpenIDToken(req) {
+    let homeserver;
+    let response;
+    let serverName;
+    if (process.env.UVS_OPENID_VERIFY_SERVER_NAME) {
+        // if (req.body.matrix_server_name !== process.env.UVS_OPENID_VERIFY_SERVER_NAME) {
+        //     // Refuse to check token against any other servers
+        //     logger.log(
+        //         'warn',
+        //         'Refusing to check token which is not for the server we have configured: ' +
+        //             req.body.matrix_server_name,
+        //     );
+        //     return false;
+        // }
+        serverName = process.env.UVS_OPENID_VERIFY_SERVER_NAME;
+    } else {
+        serverName = req.body.matrix_server_name;
+    }
+    try {
+        homeserver = await matrixUtils.discoverHomeserverUrl(serverName);
+    } catch (error) {
+        logger.log('warn', `Failed to discover homeserver URL: ${error}`, {requestId: req.requestId});
+        return false;
+    }
+    if (!homeserver.homeserverUrl) {
+        logger.log('warn',
+            'Empty or invalid homeserverUrl from discoverHomeserverUrl response',
+            {requestId: req.requestId},
+        );
+        return false;
+    }
+    try {
+        const url = `${homeserver.homeserverUrl}/_matrix/federation/v1/openid/userinfo`;
+        logger.log('debug', `Making request to: ${url}?access_token=redacted`, {requestId: req.requestId});
+        response = await utils.axiosGet(
+            `${url}?access_token=${req.body.token}`,
+            null,
+            {
+                Host: homeserver.serverName,
+            },
+        );
+    } catch (error) {
+        utils.errorLogger(error, req);
+        return false;
+    }
+    if (response && response.data && response.data.sub) {
+        // Ensure the user ID actually matches the server name we checked against
+        if (typeof response.data.sub !== 'string' || !response.data.sub.endsWith(`:${serverName}`)) {
+            // This does not match, fail
+            logger.log(
+                'warn',
+                `Matrix user ID ${response.data.sub} from OpenID userinfo lookup does not ` +
+                    `match given matrix_server_name ${serverName}`,
+                {requestId: req.requestId},
+            );
+            return false;
+        }
+        logger.log('debug', 'Successful token verification', {requestId: req.requestId});
+        return response.data.sub;
+    }
+    logger.log('debug', `Failed token verification: ${utils.tryStringify(response)}`, {requestId: req.requestId});
+    return false;
+}
+
+async function verifyRoomMembership(userId, req) {
+    let response;
+    const homeserverUrl = process.env.UVS_HOMESERVER_URL;
+    try {
+        const url = `${homeserverUrl}/_synapse/admin/v1/rooms/${req.body.room_id}/members`;
+        logger.log('debug', `Making request to: ${url}`, {requestId: req.requestId});
+        response = await utils.axiosGet(
+            url,
+            null,
+            {
+                Authorization: `Bearer ${process.env.UVS_ACCESS_TOKEN}`,
+            }
+        );
+    } catch (error) {
+        utils.errorLogger(error, req);
+        return false;
+    }
+    if (response && response.data && response.data.members) {
+        if (response.data.members.includes(userId)) {
+            logger.log('debug', 'Successful room membership verification', {requestId: req.requestId});
+            return true;
+        } else {
+            logger.log('debug', 'User is not in the room.', {requestId: req.requestId});
+        }
+    }
+    // Don't print out response to logs - it contains the member list.
+    logger.log('debug', 'Failed room membership verification.', {requestId: req.requestId});
+    return false;
 }
 
 module.exports = {
-    discoverHomeserverUrl,
-    parseHostnameAndPort,
-    validateDomain,
+    getRoomPowerLevels,
+    sanityCheckRequest,
+    verifyOpenIDToken,
+    verifyRoomMembership,
 };
