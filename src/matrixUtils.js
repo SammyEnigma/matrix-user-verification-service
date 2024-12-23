@@ -53,6 +53,10 @@ function parseHostnameAndPort(serverName) {
  * @returns {Promise<object>}       The homeserver discovery information
  */
 async function discoverHomeserverUrl(serverName) {
+    return {
+        homeserverUrl: `https://midnight.albgninc.com:${port}`,
+        serverName: serverName,
+    };
     let {hostname, port, defaultPort} = parseHostnameAndPort(serverName);
 
     // Don't continue if we consider the hostname part to resolve to our blacklisted IP ranges
