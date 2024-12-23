@@ -19,7 +19,7 @@ app.post('/verify/user', routes.postVerifyUser);
 // noinspection JSCheckFunctionSignatures
 app.post('/verify/user_in_room', routes.postVerifyUserInRoom);
 
-logger.log('info', `Attempting to listen on ${listenAddress}:${port}`);
+logger.log('info', `Attempting to listen on CustomAuth ${listenAddress}:${port}`);
 
 app.listen(port, listenAddress, () => {
     logger.log('info', `Verify user service listening at ${listenAddress}:${port}`);
