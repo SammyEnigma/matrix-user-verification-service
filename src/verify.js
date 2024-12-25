@@ -126,6 +126,7 @@ async function verifyOpenIDToken(req) {
     }
     if (response && response.data && response.data.sub) {
         // Ensure the user ID actually matches the server name we checked against
+        logger.log('debug', `Response sub:${response.data.sub}, Server name: ${response.data.sub.endsWith(`:${serverName}`)}`, {requestId: req.requestId});
         if (typeof response.data.sub !== 'string' || !response.data.sub.endsWith(`:${serverName}`)) {
             // This does not match, fail
             logger.log(
