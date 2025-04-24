@@ -50,10 +50,32 @@ function parseHostnameAndPort(serverName) {
  * https://matrix.org/docs/spec/server_server/r0.1.4#server-discovery
  *
  * @param {string} serverName       The server name to discover for
+ * @param {string|null} subdomain   Optional subdomain to use if only domain is passed
  * @returns {Promise<object>}       The homeserver discovery information
  */
-async function discoverHomeserverUrl(serverName) {
-    let {hostname, port, defaultPort} = parseHostnameAndPort(serverName);
+async function discoverHomeserverUrl(serverName, subdomain = null) {
+    let { hostname, port, defaultPort } = parseHostnameAndPort(serverName);
+
+    // If an optional subdomain is provided, handle domain-only inputs or verify subdomain
+    if (subdomain) {
+        const domainPart = hostname.includes('.') ? hostname.split('.').slice(1).join('.') : hostname;
+        const subdomainHostname = `${subdomain}.${domainPart}`;
+
+        // If user passed only the domain (e.g. "alnk.com"), redirect to subdomain
+        if (defaultPort && hostname === domainPart) {
+            return {
+                homeserverUrl: `https://${subdomainHostname}:${port}`,
+                serverName: serverName,
+            };
+        }
+
+        // If user passed the correct subdomain, proceed
+        if (hostname === subdomainHostname) {
+            // proceed without modifying homeserverUrl/serverName, fall through
+        } else {
+            throw Error(`Server name not allowed: ${serverName}`);
+        }
+    }
 
     // Don't continue if we consider the hostname part to resolve to our blacklisted IP ranges
     if (utils.isBlacklisted(await utils.resolveDomain(hostname))) {
